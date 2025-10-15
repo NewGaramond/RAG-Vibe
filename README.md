@@ -1,2 +1,2 @@
-# RAG-Vibe
-Minimalistic RAG App for RAG aficionados
+# RAG-Chill
+A chill RAG implementations from some Alan Turing enthusiasts
