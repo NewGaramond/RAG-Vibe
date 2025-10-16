@@ -1,0 +1,15 @@
+openai>=1.47.0
+langchain>=0.3
+langgraph>=0.2
+langchain-openai>=0.1.23
+chromadb>=0.5
+gradio>=4.0
+python-dotenv
+pydantic>=2
+pymupdf
+pdfplumber
+pillow
+tiktoken
+uvicorn
+langchain_community
+langchain_text_splitters
