@@ -39,6 +39,9 @@ from langchain_community.vectorstores import Chroma
 # PDF
 import fitz  # PyMuPDF
 
+import argparse, os
+from dotenv import load_dotenv
+from src.ingest.image_features import ImageIngestConfig, ingest_pdf_images
 
 # -------------------------
 # Configuration
