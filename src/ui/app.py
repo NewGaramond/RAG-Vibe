@@ -12,12 +12,17 @@ Env (.env):
   VECTORDB_DIR=storage/chroma
   COLLECTION=pdf_chunks
   TOP_K=5
+
+Optional memory controls:
+  MEMORY_TOKEN_BUDGET=4000
+  MEMORY_LAST_TURNS=4
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Tuple
+import re
+from typing import List, Tuple, Dict, Any
 
 import gradio as gr
 from dotenv import load_dotenv
@@ -26,18 +31,31 @@ from langchain_core.documents import Document
 # Import your compiled LangGraph RAG app builder
 from src.rag.graph import RagConfig, build_graph  # noqa: E402
 
-
 load_dotenv()
-
 
 # --- Build/boot the RAG pipeline once ---
 CFG = RagConfig.from_env_and_args()  # uses env; CLI args ignored when launched via Gradio
 APP = build_graph(CFG)               # compiled LangGraph
 
+# --- Small-talk detector (skip retrieval + citations for "thanks", etc.) ---
+SMALLTALK_RE = re.compile(
+    r"^\s*(thanks|thank you|gracias|ok(?:ay)?|cool|nice|awesome|perfect|great|cheers|got it|understood|noted|👍|👌|🙏)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+def is_smalltalk(msg: str) -> bool:
+    msg = (msg or "").strip()
+    if not msg:
+        return False
+    if "?" in msg:   # treat questions as normal queries
+        return False
+    return bool(SMALLTALK_RE.match(msg))
+
 
 def _format_sources_md(docs: List[Document]) -> str:
+    # Hide the section entirely when there are no docs
     if not docs:
-        return "_No sources returned._"
+        return ""
     lines = ["### Sources"]
     for i, d in enumerate(docs, start=1):
         file_name = d.metadata.get("file_name") or os.path.basename(d.metadata.get("source", "unknown"))
@@ -49,24 +67,53 @@ def _format_sources_md(docs: List[Document]) -> str:
     return "\n\n".join(lines)
 
 
-def _answer_with_details(question: str) -> Tuple[str, str]:
+def _answer_with_details(question: str, mem: Dict[str, Any]):
     """
-    Returns (answer_md, sources_md, blocked, guard_report)
+    Returns (answer_md, sources_md, blocked, guard_report, new_mem, mem_event)
+    - Sends prior memory (history + summary) into the graph
+    - Receives updated memory back after generation
     """
-    out = APP.invoke({"question": question})
+    out = APP.invoke({
+        "question": question,
+        "history": mem.get("history", []),
+        "summary": mem.get("summary", ""),
+    })
     answer = (out.get("answer") or "").strip()
     docs = out.get("docs", [])
     blocked = bool(out.get("blocked", False))
     guard = out.get("guard_report") or {}
+    mem_event = out.get("memory_event") or {}  # may be {} if graph not patched yet
 
     sources_md = _format_sources_md(docs)
-    return answer, sources_md, blocked, guard
 
-def respond(user_msg: str, chat_history: List[Tuple[str, str]]):
+    # Pull back updated memory for next turn
+    new_mem = {
+        "history": out.get("history", mem.get("history", [])),
+        "summary": out.get("summary", mem.get("summary", "")),
+    }
+    return answer, sources_md, blocked, guard, new_mem, mem_event
+
+
+def respond(user_msg: str, chat_history: List[Tuple[str, str]], mem: Dict[str, Any]):
+    """
+    MUST return 3 outputs to match the Gradio wiring:
+      - updated chat history
+      - cleared input (Textbox)
+      - updated mem_state
+    """
     if not user_msg or not user_msg.strip():
-        return chat_history, gr.update(value="")
+        return chat_history, gr.update(value=""), mem
+
+    user_msg = user_msg.strip()
+
+    # Small-talk path → no retrieval, no sources
+    if is_smalltalk(user_msg):
+        reply = "You're welcome! 😊"
+        chat_history = chat_history + [(user_msg, reply)]
+        return chat_history, gr.update(value=""), mem
+
     try:
-        answer, sources, blocked, guard = _answer_with_details(user_msg.strip())
+        answer, sources, blocked, guard, new_mem, mem_event = _answer_with_details(user_msg, mem)
 
         if blocked:
             # Keep it concise; show top patterns that triggered the guard.
@@ -75,14 +122,23 @@ def respond(user_msg: str, chat_history: List[Tuple[str, str]]):
             details = f"\n\n_Details: score={guard.get('score', 0)}; matches: {show}_"
             answer = f"Request blocked by guardrail.\n\n{answer}{details}"
 
-        full_answer = f"{answer}\n\n---\n{sources}"
-        chat_history = chat_history + [(user_msg.strip(), full_answer)]
-        return chat_history, gr.update(value="")
+        # Memory banner when summarizer fires
+        banner = ""
+        if mem_event.get("did_summarize"):
+            dropped = mem_event.get("dropped_messages", 0)
+            kept = mem_event.get("kept_messages", 0)
+            banner = f"\n\n> 🧠 _Conversation condensed (dropped {dropped}, keeping {kept})._"
+
+        # Only add the Sources block if there are docs
+        section = f"\n\n---\n{sources}" if sources else ""
+        full_answer = f"{answer}{banner}{section}"
+
+        chat_history = chat_history + [(user_msg, full_answer)]
+        return chat_history, gr.update(value=""), new_mem
     except Exception as e:
         err = f"⚠️ Error: {e}"
-        chat_history = chat_history + [(user_msg.strip(), err)]
-        return chat_history, gr.update(value="")
-
+        chat_history = chat_history + [(user_msg, err)]
+        return chat_history, gr.update(value=""), mem
 
 
 with gr.Blocks(fill_height=True) as demo:
@@ -123,18 +179,21 @@ with gr.Blocks(fill_height=True) as demo:
                 "> Add more PDFs to `data/raw/` and re-run ingestion."
             )
 
-    # Wire events
+    # Memory state (history + summary) persisted across turns
+    mem_state = gr.State({"history": [], "summary": ""})
+
+    # Wire events (NOTE: 3 inputs, 3 outputs)
     send_btn.click(
         fn=respond,
-        inputs=[user_in, chatbot],
-        outputs=[chatbot, user_in],
+        inputs=[user_in, chatbot, mem_state],
+        outputs=[chatbot, user_in, mem_state],
     )
     user_in.submit(
         fn=respond,
-        inputs=[user_in, chatbot],
-        outputs=[chatbot, user_in],
+        inputs=[user_in, chatbot, mem_state],
+        outputs=[chatbot, user_in, mem_state],
     )
-    clear_btn.click(lambda: ([], ""), None, [chatbot, user_in])
+    clear_btn.click(lambda: ([], "", {"history": [], "summary": ""}), None, [chatbot, user_in, mem_state])
 
 
 def main():
