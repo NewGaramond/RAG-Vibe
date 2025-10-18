@@ -6,16 +6,29 @@ Usage:
   python -m src.ingest.run
   python -m src.ingest.run --docs-dir data/raw --vectordb-dir storage/chroma --collection pdf_chunks
   python -m src.ingest.run --chunk-size 1200 --chunk-overlap 200 --top-k 5
-  python -m src.ingest.run --clean   # deletes existing vectors for matching files before re-adding
+  python -m src.ingest.run --clean
+  # NEW: also index images (captions + tags)
+  python -m src.ingest.run --with-images
+  python -m src.ingest.run --with-images --docs-dir data/raw
 
 Env (.env):
   OPENAI_API_KEY=sk-...
   OPENAI_MODEL_EMBED=text-embedding-3-large
+  # optional: vision model for captions
+  OPENAI_MODEL_VISION=gpt-4o-mini
+
   DOCS_DIR=data/raw
   VECTORDB_DIR=storage/chroma
+  COLLECTION=pdf_chunks
   CHUNK_SIZE=1200
   CHUNK_OVERLAP=200
-  TOP_K=5
+
+  # NEW (optional)
+  IMG_MIN_W=150
+  IMG_MIN_H=150
+  IMG_MAX_PER_PDF=24
+  IMAGES_DIR=storage/images
+  IMAGES_THUMBS_DIR=storage/images/thumbs
 """
 
 from __future__ import annotations
@@ -36,12 +49,12 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 
-# PDF
+# PDF text
 import fitz  # PyMuPDF
 
-import argparse, os
-from dotenv import load_dotenv
+# NEW: image features ingestion
 from src.ingest.image_features import ImageIngestConfig, ingest_pdf_images
+
 
 # -------------------------
 # Configuration
@@ -54,12 +67,23 @@ class IngestConfig:
     chunk_size: int = 1200
     chunk_overlap: int = 200
     embed_model: str = "text-embedding-3-large"
-    clean: bool = False  # if True, remove existing docs for a file before re-adding
+    clean: bool = False  # if True, remove existing vectors for a file before re-adding
+    # NEW:
+    with_images: bool = False
+    vision_model: str = "gpt-4o-mini"
+    img_min_w: int = 150
+    img_min_h: int = 150
+    img_max_per_pdf: int = 24
+    images_dir: Path = Path("storage/images")
+    thumbs_dir: Path = Path("storage/images/thumbs")
+    img_sleep_ms: int = 300
+    img_retries: int = 4
+    img_backoff_base: float = 0.6
 
     @staticmethod
     def from_env_and_args() -> "IngestConfig":
         load_dotenv()
-        parser = argparse.ArgumentParser(description="Ingest PDFs into Chroma with OpenAI embeddings.")
+        parser = argparse.ArgumentParser(description="Ingest PDFs (text + optional images) into Chroma with OpenAI embeddings.")
         parser.add_argument("--docs-dir", type=str, default=os.getenv("DOCS_DIR", "data/raw"))
         parser.add_argument("--vectordb-dir", type=str, default=os.getenv("VECTORDB_DIR", "storage/chroma"))
         parser.add_argument("--collection", type=str, default=os.getenv("COLLECTION", "pdf_chunks"))
@@ -67,6 +91,18 @@ class IngestConfig:
         parser.add_argument("--chunk-overlap", type=int, default=int(os.getenv("CHUNK_OVERLAP", "200")))
         parser.add_argument("--embed-model", type=str, default=os.getenv("OPENAI_MODEL_EMBED", "text-embedding-3-large"))
         parser.add_argument("--clean", action="store_true", help="Delete existing vectors per file before re-adding.")
+        # NEW flags for image ingestion
+        parser.add_argument("--with-images", action="store_true", help="Extract figures, caption/tag them, and index into Chroma.")
+        parser.add_argument("--vision-model", type=str, default=os.getenv("OPENAI_MODEL_VISION", os.getenv("OPENAI_MODEL_CHAT", "gpt-4o-mini")))
+        parser.add_argument("--img-min-w", type=int, default=int(os.getenv("IMG_MIN_W", "150")))
+        parser.add_argument("--img-min-h", type=int, default=int(os.getenv("IMG_MIN_H", "150")))
+        parser.add_argument("--img-max-per-pdf", type=int, default=int(os.getenv("IMG_MAX_PER_PDF", "24")))
+        parser.add_argument("--images-dir", type=str, default=os.getenv("IMAGES_DIR", "storage/images"))
+        parser.add_argument("--images-thumbs-dir", type=str, default=os.getenv("IMAGES_THUMBS_DIR", "storage/images/thumbs"))
+        parser.add_argument("--img-sleep-ms", type=int, default=int(os.getenv("IMG_SLEEP_MS", "300")))
+        parser.add_argument("--img-retries", type=int, default=int(os.getenv("IMG_RETRIES", "4")))
+        parser.add_argument("--img-backoff-base", type=float, default=float(os.getenv("IMG_BACKOFF_BASE", "0.6")))
+
         args = parser.parse_args()
 
         return IngestConfig(
@@ -77,6 +113,14 @@ class IngestConfig:
             chunk_overlap=args.chunk_overlap,
             embed_model=args.embed_model,
             clean=args.clean,
+            # NEW:
+            with_images=args.with_images,
+            vision_model=args.vision_model,
+            img_min_w=args.img_min_w,
+            img_min_h=args.img_min_h,
+            img_max_per_pdf=args.img_max_per_pdf,
+            images_dir=Path(args.images_dir),
+            thumbs_dir=Path(args.images_thumbs_dir),
         )
 
 
@@ -84,10 +128,7 @@ class IngestConfig:
 # Logging
 # -------------------------
 def setup_logging():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(levelname)s] %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 
 # -------------------------
@@ -162,20 +203,29 @@ def get_chroma_store(cfg: IngestConfig, embeddings: OpenAIEmbeddings) -> Chroma:
 
 def delete_docs_for_file(vs: Chroma, file_path: Path):
     """
-    Delete existing vectors for a given file by metadata filter.
+    Delete existing TEXT chunks for a given file by metadata filter.
     """
     try:
         deleted = vs.delete(where={"source": str(file_path.resolve())})
-        logging.info(f"Deleted {deleted} existing chunks for file: {file_path.name}")
+        logging.info(f"Deleted {deleted} existing text chunks for: {file_path.name}")
     except Exception as e:
         logging.warning(f"Delete skipped/failed for {file_path.name}: {e}")
 
 
+# NEW: delete image records for a file (modality=image)
+def delete_images_for_file(vs: Chroma, file_path: Path):
+    try:
+        deleted = vs.delete(where={"file_name": file_path.name, "modality": "image"})
+        logging.info(f"Deleted {deleted} existing image records for: {file_path.name}")
+    except Exception as e:
+        logging.warning(f"Delete images skipped/failed for {file_path.name}: {e}")
+
+
 # -------------------------
-# Ingest one PDF
+# Ingest one PDF (text)
 # -------------------------
-def ingest_pdf(vs: Chroma, file_path: Path, cfg: IngestConfig) -> int:
-    logging.info(f"Ingesting: {file_path.name}")
+def ingest_pdf_text(vs: Chroma, file_path: Path, cfg: IngestConfig) -> int:
+    logging.info(f"[text] Ingesting: {file_path.name}")
 
     if cfg.clean:
         delete_docs_for_file(vs, file_path)
@@ -191,12 +241,38 @@ def ingest_pdf(vs: Chroma, file_path: Path, cfg: IngestConfig) -> int:
         return 0
 
     ids = [make_stable_id(d) for d in docs]
-
-    # Upsert-like behavior: try add; duplicates are naturally skipped in new Chroma versions if IDs repeat.
-    # If your Chroma version errors on duplicate IDs, run with --clean to remove first.
     vs.add_documents(documents=docs, ids=ids)
-    logging.info(f"Added {len(docs)} chunks from {file_path.name}")
+    logging.info(f"[text] Added {len(docs)} chunks from {file_path.name}")
     return len(docs)
+
+
+# -------------------------
+# Ingest one PDF (images)
+# -------------------------
+def ingest_pdf_images_wrapper(file_path: Path, cfg: IngestConfig, api_key: str):
+    logging.info(f"[images] Ingesting figures: {file_path.name}")
+
+    # If cleaning, remove old image records for this file
+    if cfg.clean:
+        # Use a temporary embeddings object just to get a VS handle for deletion
+        embeddings = OpenAIEmbeddings(model=cfg.embed_model, api_key=api_key)
+        vs = get_chroma_store(cfg, embeddings)
+        delete_images_for_file(vs, file_path)
+
+    img_cfg = ImageIngestConfig(
+        openai_api_key=api_key,
+        embed_model=cfg.embed_model,
+        vectordb_dir=str(cfg.vectordb_dir),
+        collection=cfg.collection,
+        caption_model=cfg.vision_model,
+        min_width=cfg.img_min_w,
+        min_height=cfg.img_min_h,
+        max_images_per_pdf=cfg.img_max_per_pdf,
+        images_dir=str(cfg.images_dir),
+        thumbs_dir=str(cfg.thumbs_dir),
+    )
+    results = ingest_pdf_images(str(file_path), img_cfg)
+    logging.info(f"[images] {file_path.name}: indexed {len(results)} figures")
 
 
 # -------------------------
@@ -214,11 +290,11 @@ def main():
     # Ensure dirs exist
     cfg.docs_dir.mkdir(parents=True, exist_ok=True)
     cfg.vectordb_dir.mkdir(parents=True, exist_ok=True)
+    cfg.images_dir.mkdir(parents=True, exist_ok=True)
+    cfg.thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Embeddings
+    # Embeddings + Vector store (for text path)
     embeddings = OpenAIEmbeddings(model=cfg.embed_model, api_key=api_key)
-
-    # Vector store
     vs = get_chroma_store(cfg, embeddings)
 
     # Find PDFs
@@ -229,11 +305,13 @@ def main():
 
     total_chunks = 0
     for pdf in pdfs:
-        total_chunks += ingest_pdf(vs, pdf, cfg)
+        total_chunks += ingest_pdf_text(vs, pdf, cfg)
+        if cfg.with_images:
+            ingest_pdf_images_wrapper(pdf, cfg, api_key)
 
     # Persist
     vs.persist()
-    logging.info(f"Done. Total chunks added: {total_chunks}")
+    logging.info(f"Done. Total text chunks added: {total_chunks}")
     logging.info(f"Chroma persisted at: {cfg.vectordb_dir.resolve()}")
     logging.info(f"Collection: {cfg.collection}")
 

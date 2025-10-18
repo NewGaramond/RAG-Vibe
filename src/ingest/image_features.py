@@ -3,6 +3,7 @@ from __future__ import annotations
 import io, os, base64, hashlib
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict, Any
+import time, random
 
 import fitz  # PyMuPDF
 from PIL import Image
@@ -26,6 +27,24 @@ class ImageIngestConfig:
     images_dir: str = "storage/images"
     thumbs_dir: str = "storage/images/thumbs"
     caption_max_tokens: int = 250
+    # NEW throttling/retry knobs
+    sleep_ms_between_calls: int = 300   # ~3–4 req/sec max; tune to your org limits
+    max_retries: int = 4
+    backoff_base: float = 0.6           # seconds; grows exponentially
+    jitter: bool = True
+
+
+class FixedSleepLimiter:
+    def __init__(self, sleep_ms: int):
+        self.sleep_ms = max(0, int(sleep_ms))
+        self._last = 0.0
+    def wait(self):
+        now = time.time()
+        elapsed_ms = (now - self._last) * 1000.0
+        remaining = self.sleep_ms - elapsed_ms
+        if remaining > 0:
+            time.sleep(remaining / 1000.0)
+        self._last = time.time()
 
 
 def _ensure_dirs(cfg: ImageIngestConfig):
@@ -90,8 +109,8 @@ def extract_images_from_pdf(pdf_path: str, cfg: ImageIngestConfig) -> List[Tuple
     return out
 
 
-def caption_image_with_openai(img: Image.Image, cfg: ImageIngestConfig) -> Dict[str, Any]:
-    """Ask the vision model for a factual caption and 5-10 tags."""
+def caption_image_with_openai(img: Image.Image, cfg: ImageIngestConfig, limiter: FixedSleepLimiter | None = None) -> Dict[str, Any]:
+    """Ask the vision model for a factual caption and tags, with throttling + retries."""
     llm = ChatOpenAI(model=cfg.caption_model, api_key=cfg.openai_api_key, temperature=0)
     prompt = (
         "Describe this image factually in 1–2 sentences. "
@@ -100,23 +119,41 @@ def caption_image_with_openai(img: Image.Image, cfg: ImageIngestConfig) -> Dict[
         '{"caption": "...", "tags": ["...","..."]}.'
     )
     data_url = _image_to_data_url(img)
-    msgs = [
-        {"role": "user", "content": [
+
+    def _invoke() -> str:
+        msgs = [{"role": "user", "content": [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_url}}
-        ]}
-    ]
-    txt = llm.invoke(msgs).content.strip()
-    # Be defensive: if model didn't return JSON, wrap it
-    try:
-        import json
-        parsed = json.loads(txt)
-        cap = str(parsed.get("caption", ""))[: cfg.caption_max_tokens]
-        tags = [t.strip() for t in (parsed.get("tags", []) or [])][:10]
-    except Exception:
-        cap = txt[: cfg.caption_max_tokens]
-        tags = []
-    return {"caption": cap, "tags": tags}
+        ]}]
+        return llm.invoke(msgs).content.strip()
+
+    for attempt in range(cfg.max_retries + 1):
+        if limiter:
+            limiter.wait()
+        try:
+            txt = _invoke()
+            try:
+                import json
+                parsed = json.loads(txt)
+                cap = str(parsed.get("caption", ""))[: cfg.caption_max_tokens]
+                tags = [t.strip() for t in (parsed.get("tags", []) or [])][:10]
+            except Exception:
+                cap = txt[: cfg.caption_max_tokens]
+                tags = []
+            return {"caption": cap, "tags": tags}
+        except Exception as e:
+            # Retry on rate limits or transient errors
+            emsg = str(e).lower()
+            transient = ("rate limit" in emsg) or ("429" in emsg) or ("temporarily unavailable" in emsg)
+            if attempt < cfg.max_retries and transient:
+                delay = cfg.backoff_base * (2 ** attempt)
+                if cfg.jitter:
+                    delay += random.uniform(0, 0.25)
+                time.sleep(delay)
+                continue
+            # Final fallback: return a safe stub so the pipeline doesn’t crash
+            return {"caption": "(uncaptioned figure)", "tags": []}
+
 
 
 def upsert_image_record(

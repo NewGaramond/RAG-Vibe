@@ -156,16 +156,24 @@ prompt = ChatPromptTemplate.from_messages(
 
 
 def build_context_blocks(docs: List[Document]) -> tuple[str, str]:
-    blocks = []
-    sources = []
+    blocks, sources = [], []
     for i, d in enumerate(docs, start=1):
-        file_name = d.metadata.get("file_name") or d.metadata.get("source", "unknown")
-        page = d.metadata.get("page", "?")
+        meta = d.metadata or {}
+        file_name = meta.get("file_name") or meta.get("source", "unknown")
+        page = meta.get("page", "?")
+        modality = meta.get("modality", "text")
         snippet = d.page_content.strip()
-        blocks.append(f"[{i}] ({file_name} p.{page})\n{snippet}")
+        if modality == "image":
+            tag = "📷 FIGURE"
+            thumb = meta.get("thumb_path", "")
+            head = f"[{i}] {tag} ({file_name} p.{page})"
+            if thumb:
+                head += f" [thumb: {thumb}]"
+            blocks.append(f"{head}\n{snippet}")
+        else:
+            blocks.append(f"[{i}] ({file_name} p.{page})\n{snippet}")
         sources.append(f"[{i}] {file_name} p.{page}")
     return "\n\n".join(blocks), "\n".join(sources)
-
 
 def render_recent_turns(history: List[Dict[str, str]], last_pairs: int = 4) -> str:
     # Render last N (user,assistant) turns
