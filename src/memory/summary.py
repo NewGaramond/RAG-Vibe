@@ -5,7 +5,6 @@ from typing import List, Dict, Tuple
 import tiktoken
 from langchain_openai import ChatOpenAI
 
-# We use cl100k_base which fits OpenAI 4.x/4o families well.
 ENC = tiktoken.get_encoding("cl100k_base")
 
 def count_tokens(text: str) -> int:
@@ -18,10 +17,9 @@ class MemoryConfig:
     chat_model: str
     api_key: str
     token_budget: int = 4000
-    last_turns: int = 4   # keep this many (user+assistant) messages verbatim
+    last_turns: int = 4   # number of (user/assistant) message pairs to keep verbatim
 
 def _render_history(history: List[Dict[str, str]]) -> str:
-    # history is list of {"role": "user"|"assistant", "content": "..."}
     lines = []
     for m in history:
         role = m.get("role", "user")
@@ -41,28 +39,36 @@ def maybe_update_summary(
     new_user: str,
     new_answer: str,
     cfg: MemoryConfig,
-) -> Tuple[str, List[Dict[str, str]]]:
+) -> Tuple[str, List[Dict[str, str]], Dict[str, int | bool]]:
     """
-    Return (new_summary, new_history). If budget exceeded, compress older history into summary
-    and keep only last N turns verbatim.
+    Return (new_summary, new_history, info).
+    info contains:
+      - did_summarize: bool
+      - token_estimate: int (summary + history estimate before summarizing)
+      - new_summary_tokens: int
+      - kept_messages: int  (messages kept verbatim after summarizing)
+      - dropped_messages: int
     """
-    # Build text we would carry forward
     candidate_history = history + [
         {"role": "user", "content": new_user},
         {"role": "assistant", "content": new_answer},
     ]
-    # Token estimate for (summary + last N turns + this new pair)
     rendered = f"SUMMARY SO FAR:\n{summary}\n\nHISTORY:\n{_render_history(candidate_history)}"
     total = count_tokens(rendered)
 
     if total <= cfg.token_budget:
-        # within budget: just append, no summarization
-        return (summary, candidate_history)
+        info = {
+            "did_summarize": False,
+            "token_estimate": total,
+            "new_summary_tokens": count_tokens(summary),
+            "kept_messages": len(candidate_history),
+            "dropped_messages": 0,
+        }
+        return (summary, candidate_history, info)
 
-    # Exceeded: summarize (summary + history) into a new shorter summary, then keep last N turns
+    # Exceeded budget → summarize older turns; keep only the last N pairs
     llm = ChatOpenAI(model=cfg.chat_model, api_key=cfg.api_key, temperature=0)
-    # Keep a little extra context for the summarizer
-    last_n = max(0, cfg.last_turns * 2)  # user+assistant count
+    last_n = max(0, cfg.last_turns * 2)  # user+assistant messages
     keep_tail = candidate_history[-last_n:] if last_n else []
     head = candidate_history[:-last_n] if last_n else candidate_history
 
@@ -78,5 +84,11 @@ def maybe_update_summary(
     ]
     new_sum = llm.invoke(msgs).content.strip()
 
-    # Return the compressed state
-    return (new_sum, keep_tail)
+    info = {
+        "did_summarize": True,
+        "token_estimate": total,
+        "new_summary_tokens": count_tokens(new_sum),
+        "kept_messages": len(keep_tail),
+        "dropped_messages": len(head),
+    }
+    return (new_sum, keep_tail, info)

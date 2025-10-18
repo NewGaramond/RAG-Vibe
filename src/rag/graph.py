@@ -23,6 +23,8 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import List, TypedDict, Dict, Any
+# at top of graph.py (near other imports)
+import logging
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -63,6 +65,10 @@ class RagConfig:
         parser.add_argument("--top-k", type=int, default=int(os.getenv("TOP_K", "5")))
         parser.add_argument("--temperature", type=float, default=0.2)
         parser.add_argument("--max-tokens", type=int, default=600)
+                # optional overrides for memory
+        parser.add_argument("--memory-budget", type=int, default=int(os.getenv("MEMORY_TOKEN_BUDGET", "4000")))
+        parser.add_argument("--memory-last-turns", type=int, default=int(os.getenv("MEMORY_LAST_TURNS", "4")))
+        
         args = parser.parse_args()
 
         key = os.getenv("OPENAI_API_KEY")
@@ -90,7 +96,7 @@ class RAGState(TypedDict, total=False):
     # NEW:
     history: List[Dict[str, str]]    # [{"role":"user","content":"..."}, {"role":"assistant","content":"..."}]
     summary: str                      # running conversation summary
-
+    memory_event: Dict[str, Any]
 # -------------------------
 # Vector store / retriever
 # -------------------------
@@ -221,9 +227,9 @@ def make_generate_node(cfg: RagConfig):
         return {"answer": result.content}
     return generate
 
+
 def make_memory_node(cfg: RagConfig):
     def mem_update(state: RAGState) -> RAGState:
-        # Update running memory with this new turn
         history = state.get("history", []) or []
         summary = state.get("summary", "") or ""
         question = state.get("question", "")
@@ -235,15 +241,53 @@ def make_memory_node(cfg: RagConfig):
             token_budget=cfg.memory_budget,
             last_turns=cfg.memory_last_turns,
         )
-        new_summary, new_history = maybe_update_summary(
-            summary=summary,
-            history=history,
-            new_user=question,
-            new_answer=answer,
-            cfg=mem_cfg,
-        )
-        return {"summary": new_summary, "history": new_history}
+
+        try:
+            # Call the summarizer; support both (summary, history, info) and (summary, history)
+            result = maybe_update_summary(
+                summary=summary,
+                history=history,
+                new_user=question,
+                new_answer=answer,
+                cfg=mem_cfg,
+            )
+            if isinstance(result, tuple) and len(result) == 3:
+                new_summary, new_history, info = result
+            elif isinstance(result, tuple) and len(result) == 2:
+                new_summary, new_history = result
+                info = {
+                    "did_summarize": False,
+                    "token_estimate": 0,
+                    "new_summary_tokens": 0,
+                    "kept_messages": len(new_history),
+                    "dropped_messages": 0,
+                }
+            else:
+                # Unexpected shape: keep memory as-is
+                logging.warning(f"[MEM] maybe_update_summary returned shape {type(result)} len?={getattr(result, '__len__', lambda: 'n/a')}")
+                new_summary, new_history = summary, history
+                info = {"did_summarize": False}
+        except Exception as e:
+            logging.exception("[MEM] memory update failed")
+            # Don’t break the chat if memory fails—just carry on with prior memory
+            return {
+                "summary": summary,
+                "history": history,
+                "memory_event": {"did_summarize": False, "error": str(e)},
+            }
+
+        if info.get("did_summarize"):
+            logging.info(
+                f"[MEM] summarized: dropped={info.get('dropped_messages', 0)} "
+                f"kept={info.get('kept_messages', 0)} "
+                f"sum_tokens={info.get('new_summary_tokens', 0)}"
+            )
+
+        return {"summary": new_summary, "history": new_history, "memory_event": info}
+
     return mem_update
+
+
 
 # -------------------------
 # Graph
