@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 storage/chroma/
 data/processed/
+data/raw/
 storage/images/
 storage/images/Notes_AWS_ML_Specialty_p3_i1.png
 storage/images/Notes_AWS_ML_Specialty_p5_i2.png
@@ -54,3 +55,5 @@ storage/images/thumbs/Notes_AWS_ML_Specialty_p40_i21.png
 storage/images/thumbs/Notes_AWS_ML_Specialty_p41_i22.png
 storage/images/thumbs/Notes_AWS_ML_Specialty_p42_i23.png
 storage/images/thumbs/Notes_AWS_ML_Specialty_p43_i24.png
+data/raw/80-020-release-information-authorization.pdf
+data/raw/CMS-10106_508_instr_enabled.pdf
