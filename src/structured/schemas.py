@@ -1,3 +1,4 @@
+# src/structured/schemas.py
 from __future__ import annotations
 from typing import Optional, Dict, Any
 from datetime import date
@@ -49,3 +50,4 @@ SCHEMAS = {
         )
     }),
 }
+
