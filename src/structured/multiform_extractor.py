@@ -17,23 +17,65 @@ class MultiFormConfig:
     use_acroform: bool = True
     max_pages: Optional[int] = None  # limit for huge PDFs
 
+    # --- OCR knobs ---
+    use_ocr: bool = False            # enable OCR fallback
+    ocr_force_all: bool = False      # OCR every page (even if text exists)
+    ocr_lang: str = "eng"            # tesseract language(s), e.g., "eng" or "eng+spa"
+    ocr_min_chars: int = 25          # if extracted text has fewer chars than this, OCR the page
+    ocr_dpi: int = 300               # rasterization DPI for OCR
+    ocr_psm: str = "6"               # tesseract page segmentation mode (e.g., "4", "6", "3")
 # ========= PDF IO =========
 def _person_field_names():
     return (
         list(getattr(PersonRecord, "model_fields", {}).keys())  # pydantic v2
         or list(getattr(PersonRecord, "__fields__", {}).keys())  # pydantic v1
     )
+def _pixmap_to_pil(pix) -> "Image.Image":
+    from PIL import Image
+    mode = "RGB" if pix.alpha == 0 else "RGBA"
+    img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+    if mode == "RGBA":
+        img = img.convert("RGB")
+    return img
 
-def read_all_pages(pdf_path: str, max_pages: Optional[int] = None) -> List[Tuple[int, str]]:
+def _ocr_page_with_tesseract(page, cfg: MultiFormConfig) -> str:
+    import pytesseract
+    pix = page.get_pixmap(dpi=cfg.ocr_dpi, alpha=False)
+    img = _pixmap_to_pil(pix)
+    config = f"--psm {cfg.ocr_psm}"
+    return pytesseract.image_to_string(img, lang=cfg.ocr_lang, config=config) or ""
+
+def read_all_pages(pdf_path: str, max_pages: Optional[int] = None, cfg: Optional[MultiFormConfig] = None) -> List[Tuple[int, str]]:
+    """
+    Returns [(page_number, text)] using native text when possible.
+    If OCR is enabled and text is scarce (< ocr_min_chars) or force flag is on, OCR the page.
+    """
     pages: List[Tuple[int, str]] = []
+    use_ocr = bool(cfg and cfg.use_ocr)
     with fitz.open(pdf_path) as doc:
         for i, page in enumerate(doc, start=1):
             if max_pages and i > max_pages:
                 break
-            txt = (page.get_text("text") or "").strip()
-            if txt:
-                pages.append((i, txt))
+            text = (page.get_text("text") or "").strip()
+
+            if use_ocr:
+                need_ocr = (cfg.ocr_force_all if cfg else False) or (len(text) < (cfg.ocr_min_chars if cfg else 25))
+                if need_ocr:
+                    try:
+                        text_ocr = _ocr_page_with_tesseract(page, cfg)
+                        # If OCR found something, prefer it; else keep the original text
+                        if text_ocr and len(text_ocr.strip()) > len(text):
+                            text = text_ocr.strip()
+                    except Exception:
+                        # silently ignore OCR errors; keep whatever text we have
+                        pass
+
+            if text:
+                pages.append((i, text))
     return pages
+
+
+
 
 def read_acroform_fields(pdf_path: str) -> Dict[str, Any]:
     data: Dict[str, Any] = {}
@@ -190,7 +232,7 @@ def extract_person_from_pdf(pdf_path: str, cfg: MultiFormConfig) -> Dict[str, An
                 pass
 
     # 2) Heuristics across all pages
-    pages = read_all_pages(pdf_path, max_pages=cfg.max_pages)
+    pages = read_all_pages(pdf_path, max_pages=cfg.max_pages, cfg=cfg)
     cands = harvest_candidates(pages)
 
     # 3) LLM adjudication or pure heuristic
