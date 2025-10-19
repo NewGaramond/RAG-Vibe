@@ -1,0 +1,50 @@
+{
+  "pdf": "data\\raw\\forms\\80-020-release-information-authorization.pdf",
+  "mode": "acroform",
+  "data": {
+    "first_name": null,
+    "last_name": null,
+    "date_of_birth": null,
+    "id_number": "123456L",
+    "email": null,
+    "phone": "699526349",
+    "address_line": "Buganvilla del Rey",
+    "city": "Madrid",
+    "state_region": "Madrid",
+    "postal_code": "28023",
+    "country": null
+  },
+  "evidence": {
+    "acroform": {
+      "client Name": "Rodriguez, Ignacio",
+      "Client ID": "123456L",
+      "client Address": "Buganvilla del Rey",
+      "client City": "Madrid",
+      "client State": "Madrid",
+      "client Zip code": "28023",
+      "client Phone": "699526349",
+      "Dependent children": "",
+      "Request reason 1": "",
+      "Request reason 2": "",
+      "reason": "",
+      "Specific info": "",
+      "Infor to be released-std": "",
+      "Infor to be released-Mental": "",
+      "Infor to be released-HIV-AIDS": "",
+      "Infor to be released-CDT": "",
+      "Date of expiration": "",
+      "Authorized receivers name": "",
+      "Authorized receivers phone #": "",
+      "Authorized receivers address": "",
+      "Authorized receivers city": "",
+      "Authorized receivers state": "",
+      "Authorized receivers zip code": "",
+      "enrollee orrepresentative Signature Field": "",
+      "representaive signature date": "",
+      "childs Signature Field": "",
+      "childs signature date": "",
+      "Printed name of representative": "",
+      "Text Field 66": ""
+    }
+  }
+}

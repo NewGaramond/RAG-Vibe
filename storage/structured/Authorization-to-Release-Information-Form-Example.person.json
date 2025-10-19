@@ -1,0 +1,84 @@
+{
+  "pdf": "data\\raw\\forms\\Authorization-to-Release-Information-Form-Example.pdf",
+  "mode": "hybrid_llm",
+  "data": {
+    "first_name": null,
+    "last_name": null,
+    "date_of_birth": "1980-01-01",
+    "id_number": null,
+    "email": null,
+    "phone": "207-555-5555",
+    "address_line": "123 Main St.                               Anywhere      ME          00000",
+    "city": "Anywhere",
+    "state_region": "ME",
+    "postal_code": "00000",
+    "country": null
+  },
+  "evidence": {
+    "candidates": {
+      "first_name": [],
+      "last_name": [],
+      "date_of_birth": [
+        {
+          "value": "01/01/1980",
+          "page": 1,
+          "line": "01/01/1980",
+          "method": "regex",
+          "score": 0.5
+        },
+        {
+          "value": "June 2, 2019",
+          "page": 2,
+          "line": "(for example “Lab test dated June 2, 2019” or “Claims ",
+          "method": "regex",
+          "score": 0.5
+        }
+      ],
+      "id_number": [],
+      "email": [],
+      "phone": [
+        {
+          "value": "207-555-5555",
+          "page": 1,
+          "line": "207-555-5555",
+          "method": "regex",
+          "score": 0.55
+        },
+        {
+          "value": "866-521-0027",
+          "page": 1,
+          "line": "866-521-0027",
+          "method": "regex",
+          "score": 0.55
+        },
+        {
+          "value": "2018-2020",
+          "page": 2,
+          "line": "from 2018-2020”) ",
+          "method": "regex",
+          "score": 0.55
+        }
+      ],
+      "address_line": [
+        {
+          "value": "123 Main St.                               Anywhere      ME          00000",
+          "page": 1,
+          "line": "123 Main St.                               Anywhere      ME          00000",
+          "method": "heuristic",
+          "score": 0.5
+        },
+        {
+          "value": "82 Running Hill Rd. Suite 202     South Portland, ME    04106",
+          "page": 1,
+          "line": "82 Running Hill Rd. Suite 202     South Portland, ME    04106",
+          "method": "heuristic",
+          "score": 0.5
+        }
+      ],
+      "city": [],
+      "state_region": [],
+      "postal_code": [],
+      "country": []
+    }
+  }
+}
