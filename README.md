@@ -1,7 +1,3 @@
-Absolutely—here’s a polished, repo-homepage **README.md** you can drop at the root. It’s concise, clear, and executive-friendly while still practical for devs.
-
----
-
 # Chatbot RAG — Guarded LangGraph RAG with PDF Ingestion, Image Search & Structured Extraction
 
 A production-minded Retrieval-Augmented Generation (RAG) stack that ingests PDFs (text **and** figures), protects against prompt-injection, plans tool use, runs a **safe** Python mini-calculator, and maintains lightweight conversational memory. Includes an optional module for **structured data extraction** from forms (e.g., person records) with OCR and LLM adjudication.
