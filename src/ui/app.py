@@ -27,6 +27,7 @@ from typing import List, Tuple, Dict, Any
 import gradio as gr
 from dotenv import load_dotenv
 from langchain_core.documents import Document
+from pathlib import Path
 
 # Import your compiled LangGraph RAG app builder
 from src.rag.graph import RagConfig, build_graph  # noqa: E402
@@ -66,6 +67,23 @@ def _format_sources_md(docs: List[Document]) -> str:
         lines.append(f"**[{i}] {file_name} · p.{page}**\n> {snippet}")
     return "\n\n".join(lines)
 
+def _collect_figures(docs: List[Document], max_figs: int = 6):
+    items = []
+    for d in docs or []:
+        meta = d.metadata or {}
+        if meta.get("modality") != "image":
+            continue
+        path = meta.get("thumb_path") or meta.get("image_path")
+        if not path:
+            continue
+        path = Path(path).as_posix()  # normalize for Gradio on Windows
+        caption = (d.page_content or "").split("\n", 1)[0]
+        if len(caption) > 140:
+            caption = caption[:140] + "…"
+        items.append([path, caption])
+        if len(items) >= max_figs:
+            break
+    return items
 
 def _answer_with_details(question: str, mem: Dict[str, Any]):
     """
@@ -91,10 +109,12 @@ def _answer_with_details(question: str, mem: Dict[str, Any]):
         "history": out.get("history", mem.get("history", [])),
         "summary": out.get("summary", mem.get("summary", "")),
     }
-    return answer, sources_md, blocked, guard, new_mem, mem_event
+    # at the end of _answer_with_details(...)
+    return answer, sources_md, blocked, guard, new_mem, mem_event, docs
 
 
-def respond(user_msg: str, chat_history: List[Tuple[str, str]], mem: Dict[str, Any]):
+
+def respond(user_msg: str, chat_history: List[Tuple[str, str]], mem: Dict[str, Any], show_figs: bool):
     """
     MUST return 3 outputs to match the Gradio wiring:
       - updated chat history
@@ -113,7 +133,7 @@ def respond(user_msg: str, chat_history: List[Tuple[str, str]], mem: Dict[str, A
         return chat_history, gr.update(value=""), mem
 
     try:
-        answer, sources, blocked, guard, new_mem, mem_event = _answer_with_details(user_msg, mem)
+        answer, sources, blocked, guard, new_mem, mem_event, docs = _answer_with_details(user_msg, mem)
 
         if blocked:
             # Keep it concise; show top patterns that triggered the guard.
@@ -134,7 +154,9 @@ def respond(user_msg: str, chat_history: List[Tuple[str, str]], mem: Dict[str, A
         full_answer = f"{answer}{banner}{section}"
 
         chat_history = chat_history + [(user_msg, full_answer)]
-        return chat_history, gr.update(value=""), new_mem
+        gallery_items = _collect_figures(docs) if show_figs else []
+        return chat_history, gr.update(value=""), new_mem, gallery_items
+    
     except Exception as e:
         err = f"⚠️ Error: {e}"
         chat_history = chat_history + [(user_msg, err)]
@@ -178,23 +200,26 @@ with gr.Blocks(fill_height=True) as demo:
                 ">\n"
                 "> Add more PDFs to `data/raw/` and re-run ingestion."
             )
+            show_figs = gr.Checkbox(value=True, label="Show recovered figures (if any)")
+            gallery = gr.Gallery(label="Figures", columns=3, rows=2, height=300, preview=True)
 
     # Memory state (history + summary) persisted across turns
     mem_state = gr.State({"history": [], "summary": ""})
 
-    # Wire events (NOTE: 3 inputs, 3 outputs)
     send_btn.click(
         fn=respond,
-        inputs=[user_in, chatbot, mem_state],
-        outputs=[chatbot, user_in, mem_state],
+        inputs=[user_in, chatbot, mem_state, show_figs],
+        outputs=[chatbot, user_in, mem_state, gallery],
     )
     user_in.submit(
         fn=respond,
-        inputs=[user_in, chatbot, mem_state],
-        outputs=[chatbot, user_in, mem_state],
+        inputs=[user_in, chatbot, mem_state, show_figs],
+        outputs=[chatbot, user_in, mem_state, gallery],
     )
-    clear_btn.click(lambda: ([], "", {"history": [], "summary": ""}), None, [chatbot, user_in, mem_state])
-
+    clear_btn.click(
+        lambda: ([], "", {"history": [], "summary": ""}, []),
+        None, [chatbot, user_in, mem_state, gallery]
+    )
 
 def main():
     # Helpful when launched via `python -m src.ui.app`
