@@ -1,6 +1,4 @@
-Awesome—thanks for sharing `filters.py`. Here’s a clean, ready-to-drop **README.md** for `src/guard/` focused on that module. You can paste it straight into `src/guard/README.md` and we’ll expand it later if you add more guard components.
 
----
 
 # Guard (Prompt-Injection Heuristics)
 
