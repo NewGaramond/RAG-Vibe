@@ -157,6 +157,4 @@ pytest -q
 
 * **v0.1** — Heuristic regex guard with thresholding and length bonus.
 
----
 
-If you later add more files to `src/guard/` (e.g., a policy router, sanitizer, or pattern loader), we’ll extend this README with an **Architecture** diagram and per-module docs.
