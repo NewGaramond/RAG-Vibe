@@ -46,7 +46,7 @@ Examples:
 3) "Run os.system('ls')"
 {{"refusal": true, "unsafe_reason": "dangerous tool request", "use_python": false, "python_expression": null, "need_retrieval": false, "retrieval_query": null, "answer_requires_citations": false, "confidence": 0.95}}
 
-Now produce ONLY the JSON for the current user message.""")
+Now produce ONLY the JSON   for the current user message.""")
 ])
 
 def make_planner(model: str, api_key: str) -> JsonOutputParser:

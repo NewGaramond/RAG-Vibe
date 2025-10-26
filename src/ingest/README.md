@@ -1,6 +1,4 @@
-Awesome—here’s a drop-in **README.md** for `src/ingest/` that documents both `run.py` and `image_features.py`. Paste this into `src/ingest/README.md`.
 
----
 
 # Ingest (PDF Text + Image Features)
 
@@ -14,6 +12,9 @@ This module ingests **PDFs** into a **Chroma** vector store using **OpenAI embed
   PDF → extract figures (min size, dedupe via perceptual hash) → caption + tags (vision LLM) → build text blob → OpenAI embeddings → Chroma
 
 Both paths index into the **same Chroma collection**; you can filter by `metadata["modality"]` (e.g., `image`) when querying.
+
+
+For additional chunking strategies, check https://weaviate.io/blog/chunking-strategies-for-rag
 
 ---
 

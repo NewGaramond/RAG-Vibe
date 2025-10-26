@@ -23,7 +23,6 @@ class ImageIngestConfig:
     caption_model: str = "gpt-4o-mini"  # vision-capable
     min_width: int = 150
     min_height: int = 150
-    max_images_per_pdf: int = 24
     images_dir: str = "storage/images"
     thumbs_dir: str = "storage/images/thumbs"
     caption_max_tokens: int = 250
